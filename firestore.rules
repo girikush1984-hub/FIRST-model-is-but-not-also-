@@ -1,0 +1,73 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    match /{document=**} {
+      allow read, write: if false;
+    }
+    
+    function isValidId(id) { 
+        return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); 
+    }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    function isSignedIn() { return request.auth != null; }
+
+    function isValidConversation(data) {
+        return data.keys().hasAll(['userId', 'createdAt', 'updatedAt']) 
+            && data.keys().size() == 3
+            && data.userId is string 
+            && data.userId == request.auth.uid
+            && data.createdAt is timestamp
+            && data.updatedAt is timestamp;
+    }
+
+    function isValidMessage(data) {
+        return data.keys().hasAll(['text', 'sender', 'timestamp'])
+            && data.keys().size() == 3
+            && data.text is string 
+            && data.text.size() > 0 
+            && data.text.size() <= 50000
+            && data.sender is string 
+            && (data.sender == 'user' || data.sender == 'bot')
+            && data.timestamp is timestamp;
+    }
+
+    match /user_conversations/{conversationId} {
+        allow get: if isSignedIn() && isValidId(conversationId) && existing().userId == request.auth.uid;
+        allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+        
+        allow create: if isSignedIn() 
+                      && isValidId(conversationId)
+                      && isValidConversation(incoming())
+                      && incoming().createdAt == request.time
+                      && incoming().updatedAt == request.time;
+                      
+        allow update: if isSignedIn() 
+                      && isValidId(conversationId)
+                      && existing().userId == request.auth.uid
+                      && incoming().diff(existing()).affectedKeys().hasOnly(['updatedAt'])
+                      && incoming().updatedAt == request.time;
+               
+        allow delete: if isSignedIn() && isValidId(conversationId) && existing().userId == request.auth.uid;       
+               
+        match /messages/{messageId} {
+            function isOwnerOfParent() {
+                 return get(/databases/$(database)/documents/user_conversations/$(conversationId)).data.userId == request.auth.uid;
+            }
+            
+            allow get: if isSignedIn() && isValidId(messageId) && isOwnerOfParent();
+            allow list: if isSignedIn() && isOwnerOfParent();
+            
+            allow create: if isSignedIn()
+                          && isValidId(messageId)
+                          && isOwnerOfParent()
+                          && isValidMessage(incoming())
+                          && incoming().timestamp == request.time;
+                          
+            allow update, delete: if false;
+        }
+    }
+  }
+}
